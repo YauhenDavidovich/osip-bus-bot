@@ -1,0 +1,14 @@
+{
+  "name": "osip-bus-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "scrape": "node src/scrape.js",
+    "start": "node src/bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "node-fetch": "^3.3.2",
+    "telegraf": "^4.16.3"
+  }
+}
