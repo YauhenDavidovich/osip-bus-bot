@@ -3,9 +3,6 @@ import fs from "fs/promises";
 import { Telegraf, Markup } from "telegraf";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const STT_MODEL = process.env.STT_MODEL || "gpt-4o-mini-transcribe";
-
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN missing");
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -65,53 +62,6 @@ async function replyChunked(ctx, text, max = 3800) {
   }
 }
 
-async function processUserText(ctx, text) {
-  const q = String(text || "").trim();
-  if (!q || q.startsWith("/")) return;
-
-  if (db.stops[q]) {
-    const out = formatStop(q);
-    await replyChunked(ctx, out);
-    return;
-  }
-
-  const matched = Object.keys(db.stops).filter((k) => k.toLowerCase().includes(q.toLowerCase()));
-  if (matched.length === 1) {
-    await replyChunked(ctx, formatStop(matched[0]));
-    return;
-  }
-
-  if (matched.length > 1) {
-    await ctx.reply("Нашёл несколько остановок:\n" + matched.map((s) => `• ${s}`).join("\n"));
-    return;
-  }
-
-  await ctx.reply("Не нашёл такую остановку. Нажми /stops и выбери из списка.");
-}
-
-async function transcribeVoiceByOpenAI(buffer) {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
-
-  const form = new FormData();
-  form.append("model", STT_MODEL);
-  form.append("file", new Blob([buffer], { type: "audio/ogg" }), "voice.ogg");
-  form.append("language", "ru");
-
-  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: form,
-  });
-
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`STT failed: ${res.status} ${t.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  return String(data?.text || "").trim();
-}
-
 bot.start(async (ctx) => {
   await ctx.reply(
     "Осиповичи: навигатор по автобусам (будние дни). Выбери остановку кнопкой ниже.",
@@ -151,35 +101,19 @@ bot.hears("ℹ️ Источник", async (ctx) => {
 
 bot.on("text", async (ctx) => {
   const text = (ctx.message.text || "").trim();
-  await processUserText(ctx, text);
-});
+  if (!text || text.startsWith("/")) return;
 
-bot.on("voice", async (ctx) => {
-  try {
-    if (!OPENAI_API_KEY) {
-      await ctx.reply("Голосовой ввод пока не настроен: нужен OPENAI_API_KEY в .env");
-      return;
-    }
+  if (db.stops[text]) {
+    const out = formatStop(text);
+    await replyChunked(ctx, out);
+    return;
+  }
 
-    const fileId = ctx.message?.voice?.file_id;
-    if (!fileId) return;
-
-    const link = await ctx.telegram.getFileLink(fileId);
-    const audioRes = await fetch(link.href);
-    if (!audioRes.ok) throw new Error(`Telegram file download failed: ${audioRes.status}`);
-    const buffer = Buffer.from(await audioRes.arrayBuffer());
-
-    const text = await transcribeVoiceByOpenAI(buffer);
-    if (!text) {
-      await ctx.reply("Не удалось распознать голосовое. Попробуй короче и чётче.");
-      return;
-    }
-
-    await ctx.reply(`🎤 Распознано: ${text}`);
-    await processUserText(ctx, text);
-  } catch (e) {
-    console.error(e);
-    await ctx.reply("Не удалось обработать голосовое. Попробуй ещё раз.");
+  // fuzzy fallback
+  const key = Object.keys(db.stops).find((k) => k.toLowerCase().includes(text.toLowerCase()));
+  if (key) {
+    const out = formatStop(key);
+    await replyChunked(ctx, out);
   }
 });
 
