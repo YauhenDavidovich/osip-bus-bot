@@ -1,7 +1,10 @@
 import fs from "fs/promises";
 import fetch from "node-fetch";
 
-const URL = "https://www.news-osip.by/raspisanie-transporta/avtobusy-budnie-dni";
+const SOURCES = {
+  weekdays: "https://www.news-osip.by/raspisanie-transporta/avtobusy-budnie-dni",
+  weekend: "https://www.news-osip.by/raspisanie-transporta/avtobusy-vyhodnye-dni",
+};
 
 function cleanText(html) {
   return html
@@ -50,9 +53,12 @@ function parseStops(text) {
 
     const body = lines.slice(1).join(" ");
 
-    // extract route blocks: "7 — ..." / "12А - ..." until next route block
-    const routeRe = /(\d{1,2}[А-ЯA-Z]?\s*[—-]\s*[^0-9][\s\S]*?)(?=\s+\d{1,2}[А-ЯA-Z]?\s*[—-]\s*[^0-9]|$)/g;
-    let chunks = [...body.matchAll(routeRe)].map((m) => normalizeChunk(m[1]));
+    // split at probable route starts after sentence boundaries; avoids splitting on times like 10:55
+    let chunks = body
+      .split(/(?=(?:^|[.;])\s*\d{1,2}[А-ЯA-Z]?\s*[—-]\s*[А-ЯA-Zа-я])/g)
+      .map((s) => s.replace(/^[.;\s]+/, ""))
+      .map((s) => normalizeChunk(s))
+      .filter((s) => /^\d{1,2}[А-ЯA-Z]?\s*[—-]/.test(s));
 
     if (!chunks.length && body) chunks = [normalizeChunk(body)];
 
@@ -68,22 +74,48 @@ function parseStops(text) {
   return stops;
 }
 
-async function main() {
-  const res = await fetch(URL, { headers: { "User-Agent": "Mozilla/5.0" } });
-  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+async function fetchStops(url) {
+  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  if (!res.ok) throw new Error(`Failed: ${res.status} for ${url}`);
   const html = await res.text();
   const text = cleanText(html);
-  const stops = parseStops(text);
+  return parseStops(text);
+}
+
+function mergeStops(...maps) {
+  const merged = {};
+  for (const map of maps) {
+    for (const [stop, lines] of Object.entries(map || {})) {
+      if (!merged[stop]) merged[stop] = [];
+      for (const line of lines || []) {
+        if (!merged[stop].includes(line)) merged[stop].push(line);
+      }
+    }
+  }
+  return merged;
+}
+
+async function main() {
+  const weekdays = await fetchStops(SOURCES.weekdays);
+  const weekend = await fetchStops(SOURCES.weekend);
+  const combined = mergeStops(weekdays, weekend);
 
   const out = {
-    source: URL,
+    sources: SOURCES,
     updatedAt: new Date().toISOString(),
-    stops,
+    modes: {
+      weekdays: { stops: weekdays },
+      weekend: { stops: weekend },
+      all: { stops: combined },
+    },
+    stops: combined,
   };
 
   await fs.mkdir("data", { recursive: true });
   await fs.writeFile("data/schedule.json", JSON.stringify(out, null, 2), "utf8");
-  console.log(`Saved ${Object.keys(stops).length} stops to data/schedule.json`);
+  console.log(
+    `Saved stops: weekdays=${Object.keys(weekdays).length}, weekend=${Object.keys(weekend).length}, all=${Object.keys(combined).length}`
+  );
 }
 
 main().catch((e) => {
