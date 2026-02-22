@@ -18,6 +18,16 @@ if (!BOT_TOKEN) throw new Error("BOT_TOKEN missing");
 
 const bot = new Telegraf(BOT_TOKEN);
 
+const STATS_PATH = "data/stats.json";
+let stats = {
+  startedAt: new Date().toISOString(),
+  totalMessages: 0,
+  uniqueUsers: {},
+  commandUsage: {},
+  buttonUsage: {},
+  lastSeenAt: {},
+};
+
 let db = { sources: {}, updatedAt: "", modes: { weekdays: { stops: {} }, weekend: { stops: {} }, all: { stops: {} } }, stops: {} };
 const modeByChat = new Map();
 const liveCache = {
@@ -39,6 +49,63 @@ function getStopsForMode(mode) {
 async function loadDb() {
   const raw = await fs.readFile("data/schedule.json", "utf8");
   db = JSON.parse(raw);
+}
+
+async function loadStats() {
+  try {
+    const raw = await fs.readFile(STATS_PATH, "utf8");
+    stats = { ...stats, ...JSON.parse(raw) };
+  } catch {
+    await saveStats();
+  }
+}
+
+async function saveStats() {
+  await fs.mkdir("data", { recursive: true });
+  await fs.writeFile(STATS_PATH, JSON.stringify(stats, null, 2), "utf8");
+}
+
+async function trackUsage(ctx, kind, name = "") {
+  const uid = String(ctx.from?.id || "unknown");
+  const now = new Date().toISOString();
+
+  stats.totalMessages += 1;
+  stats.uniqueUsers[uid] = true;
+  stats.lastSeenAt[uid] = now;
+
+  if (kind === "command") {
+    stats.commandUsage[name] = (stats.commandUsage[name] || 0) + 1;
+  }
+  if (kind === "button") {
+    stats.buttonUsage[name] = (stats.buttonUsage[name] || 0) + 1;
+  }
+
+  await saveStats();
+}
+
+function statsSummary() {
+  const usersCount = Object.keys(stats.uniqueUsers || {}).length;
+  const topCommands = Object.entries(stats.commandUsage || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([k, v]) => `• /${k}: ${v}`);
+  const topButtons = Object.entries(stats.buttonUsage || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([k, v]) => `• ${k}: ${v}`);
+
+  return [
+    `📊 Статистика бота`,
+    `С момента: ${stats.startedAt}`,
+    `Уникальных пользователей: ${usersCount}`,
+    `Всего сообщений/действий: ${stats.totalMessages}`,
+    "",
+    `Топ команд:`,
+    ...(topCommands.length ? topCommands : ["• нет данных"]),
+    "",
+    `Топ кнопок:`,
+    ...(topButtons.length ? topButtons : ["• нет данных"]),
+  ].join("\n");
 }
 
 function stopKeyboard(mode = "weekdays") {
@@ -249,6 +316,22 @@ function railLinksKeyboard() {
   ]);
 }
 
+bot.use(async (ctx, next) => {
+  const txt = String(ctx.message?.text || "").trim();
+  if (txt.startsWith("/")) {
+    const cmd = txt.slice(1).split(/\s+/)[0].toLowerCase();
+    await trackUsage(ctx, "command", cmd);
+  } else if (txt) {
+    const quick = ["🏙 Город", "🚌 Пригород", "🚆 Электрички", "🚉 Дизеля", "🚄 Дальние", "📅 Будни", "📅 Выходные", "🔄 Обновить данные", "ℹ️ Источник"];
+    if (quick.includes(txt)) {
+      await trackUsage(ctx, "button", txt);
+    } else {
+      await trackUsage(ctx, "button", "free_text");
+    }
+  }
+  return next();
+});
+
 bot.start(async (ctx) => {
   const chatId = ctx.chat?.id;
   if (chatId) modeByChat.set(chatId, "weekdays");
@@ -335,6 +418,10 @@ bot.command("rail", async (ctx) => {
   );
 });
 
+bot.command("stats", async (ctx) => {
+  await replyChunked(ctx, statsSummary());
+});
+
 bot.hears("🏙 Город", async (ctx) => {
   const mode = getMode(ctx.chat?.id);
   await ctx.reply(`Режим города: ${mode === "weekend" ? "выходные" : "будни"}. Выбирай остановку 👇`, stopKeyboard(mode));
@@ -412,6 +499,7 @@ bot.on("text", async (ctx) => {
 });
 
 await loadDb();
+await loadStats();
 await bot.telegram.setMyCommands([
   { command: "start", description: "Старт и меню" },
   { command: "stops", description: "Показать остановки" },
@@ -420,7 +508,8 @@ await bot.telegram.setMyCommands([
   { command: "trains", description: "Электрички" },
   { command: "diesel", description: "Дизеля" },
   { command: "long", description: "Дальние поезда" },
-  { command: "rail", description: "ЖД (дизеля + дальние)" }
+  { command: "rail", description: "ЖД (дизеля + дальние)" },
+  { command: "stats", description: "Статистика использования" }
 ]);
 
 bot.launch();
