@@ -22,10 +22,44 @@ function stopKeyboard() {
   return Markup.keyboard(rows).resize();
 }
 
+function expandRouteLine(line) {
+  const fixed = String(line || "")
+    .replace(/Г\s+имназия/g, "Гимназия")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  const parts = fixed
+    .split(/(?=\s\d{1,2}[А-ЯA-Z]?\s*[—-])/g)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  return parts.length ? parts : [fixed];
+}
+
 function formatStop(name) {
   const lines = db.stops[name] || [];
   if (!lines.length) return `Нет данных по остановке: ${name}`;
-  return [`🚌 Остановка: ${name}`, `Обновлено: ${db.updatedAt}`, "", ...lines.slice(0, 80)].join("\n");
+
+  const expanded = lines.flatMap(expandRouteLine).filter((s) => s.length > 8);
+  const pretty = expanded.map((l) => `• ${l}`);
+
+  return [
+    `🚌 Остановка: ${name}`,
+    `Обновлено: ${db.updatedAt}`,
+    `Маршрутов/записей: ${pretty.length}`,
+    "",
+    ...pretty,
+  ].join("\n");
+}
+
+async function replyChunked(ctx, text, max = 3800) {
+  if (text.length <= max) {
+    await ctx.reply(text);
+    return;
+  }
+  for (let i = 0; i < text.length; i += max) {
+    await ctx.reply(text.slice(i, i + max));
+  }
 }
 
 bot.start(async (ctx) => {
@@ -71,7 +105,7 @@ bot.on("text", async (ctx) => {
 
   if (db.stops[text]) {
     const out = formatStop(text);
-    await ctx.reply(out.length > 3900 ? out.slice(0, 3900) : out);
+    await replyChunked(ctx, out);
     return;
   }
 
@@ -79,7 +113,7 @@ bot.on("text", async (ctx) => {
   const key = Object.keys(db.stops).find((k) => k.toLowerCase().includes(text.toLowerCase()));
   if (key) {
     const out = formatStop(key);
-    await ctx.reply(out.length > 3900 ? out.slice(0, 3900) : out);
+    await replyChunked(ctx, out);
   }
 });
 

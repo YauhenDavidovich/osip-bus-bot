@@ -28,6 +28,15 @@ function normalizeStopName(raw) {
     .trim();
 }
 
+function normalizeChunk(s) {
+  return String(s || "")
+    .replace(/\s*[:]\s*/g, ":")
+    .replace(/\s*[;]\s*/g, "; ")
+    .replace(/\s*[.]\s*/g, ". ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function parseStops(text) {
   const parts = text.split(/Отправление с остановки\s+/gi).slice(1);
   const stops = {};
@@ -41,15 +50,18 @@ function parseStops(text) {
 
     const body = lines.slice(1).join(" ");
 
-    // rough split by route markers like "7 — ..." or "12 - ..."
-    const chunks = body
-      .split(/(?=\b\d{1,2}[АAМM]?[\s\-—])/g)
-      .map((s) => s.trim())
-      .filter((s) => /^\d{1,2}[АAМM]?/.test(s));
+    // extract route blocks: "7 — ..." / "12А - ..." until next route block
+    const routeRe = /(\d{1,2}[А-ЯA-Z]?\s*[—-]\s*[^0-9][\s\S]*?)(?=\s+\d{1,2}[А-ЯA-Z]?\s*[—-]\s*[^0-9]|$)/g;
+    let chunks = [...body.matchAll(routeRe)].map((m) => normalizeChunk(m[1]));
+
+    if (!chunks.length && body) chunks = [normalizeChunk(body)];
+
+    // drop obvious garbage fragments
+    chunks = chunks.filter((s) => s.length > 12 && /\d{1,2}[А-ЯA-Z]?\s*[—-]/.test(s));
 
     if (!stops[stopName]) stops[stopName] = [];
     for (const ch of chunks) {
-      if (!stops[stopName].includes(ch)) stops[stopName].push(ch);
+      if (ch.length >= 6 && !stops[stopName].includes(ch)) stops[stopName].push(ch);
     }
   }
 
