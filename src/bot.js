@@ -194,10 +194,13 @@ async function fetchSuburbanBusPreview() {
   }
 }
 
-async function fetchRailByType(type) {
+async function fetchRailByType(type, directionQuery = "") {
   try {
-    const key = type === 'long' ? 'long' : 'diesel';
-    if (Date.now() - liveCache[key].ts < CACHE_TTL_MS && liveCache[key].text) return liveCache[key].text;
+    const key = type === "long" ? "long" : "diesel";
+    const q = directionQuery.trim().toLowerCase();
+
+    const useCache = !q && Date.now() - liveCache[key].ts < CACHE_TTL_MS && liveCache[key].text;
+    if (useCache) return liveCache[key].text;
 
     const res = await fetch(DIESEL_URL, { headers: { "User-Agent": "Mozilla/5.0" } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -205,20 +208,28 @@ async function fetchRailByType(type) {
     const text = htmlToText(html);
     const all = parsePoezdatoRows(text);
 
-    const filtered = all.filter((r) => {
+    let filtered = all.filter((r) => {
       const n = r.num;
       const isSuburban = /^\d{4}$/.test(n);
       const isLong = !isSuburban;
-      if (type === 'diesel') return isSuburban;
-      return isLong;
+      return type === "diesel" ? isSuburban : isLong;
     });
 
+    if (q) {
+      filtered = filtered.filter((r) => `${r.from} ${r.to}`.toLowerCase().includes(q));
+    }
+
     const rows = filtered.slice(0, 12).map((r) => `• ${r.depart} ${r.from} → ${r.to} (#${r.num})`);
-    const out = rows.length ? rows.join('\n') : 'Не удалось получить данные по выбранной категории.';
-    liveCache[key] = { ts: Date.now(), text: out };
+    const out = rows.length
+      ? rows.join("\n")
+      : q
+        ? `Ничего не найдено по направлению: ${directionQuery}`
+        : "Не удалось получить данные по выбранной категории.";
+
+    if (!q) liveCache[key] = { ts: Date.now(), text: out };
     return out;
   } catch {
-    return 'Не удалось получить данные по железной дороге прямо сейчас.';
+    return "Не удалось получить данные по железной дороге прямо сейчас.";
   }
 }
 
@@ -297,13 +308,31 @@ bot.command("trains", async (ctx) => {
 });
 
 bot.command("diesel", async (ctx) => {
-  const preview = await fetchRailByType("diesel");
-  await ctx.reply(`🚉 Дизеля/пригородные поезда (превью):\n${preview}`, railLinksKeyboard());
+  const q = (ctx.message.text || "").split(" ").slice(1).join(" ").trim();
+  const preview = await fetchRailByType("diesel", q);
+  await ctx.reply(`🚉 Дизеля/пригородные поезда${q ? ` (${q})` : ""}:\n${preview}`, railLinksKeyboard());
 });
 
 bot.command("long", async (ctx) => {
-  const preview = await fetchRailByType("long");
-  await ctx.reply(`🚄 Поезда дальнего следования (превью):\n${preview}`, railLinksKeyboard());
+  const q = (ctx.message.text || "").split(" ").slice(1).join(" ").trim();
+  const preview = await fetchRailByType("long", q);
+  await ctx.reply(`🚄 Поезда дальнего следования${q ? ` (${q})` : ""}:\n${preview}`, railLinksKeyboard());
+});
+
+bot.command("rail", async (ctx) => {
+  const q = (ctx.message.text || "").split(" ").slice(1).join(" ").trim();
+  const diesel = await fetchRailByType("diesel", q);
+  const long = await fetchRailByType("long", q);
+  await replyChunked(
+    ctx,
+    [
+      `🚉 Дизеля${q ? ` (${q})` : ""}:`,
+      diesel,
+      "",
+      `🚄 Дальние${q ? ` (${q})` : ""}:`,
+      long,
+    ].join("\n")
+  );
 });
 
 bot.hears("🏙 Город", async (ctx) => {
@@ -390,7 +419,8 @@ await bot.telegram.setMyCommands([
   { command: "suburban", description: "Пригородные автобусы" },
   { command: "trains", description: "Электрички" },
   { command: "diesel", description: "Дизеля" },
-  { command: "long", description: "Дальние поезда" }
+  { command: "long", description: "Дальние поезда" },
+  { command: "rail", description: "ЖД (дизеля + дальние)" }
 ]);
 
 bot.launch();
