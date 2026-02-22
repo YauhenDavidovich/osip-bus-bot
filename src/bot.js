@@ -1,5 +1,6 @@
 import "dotenv/config";
 import fs from "fs/promises";
+import pdfParse from "pdf-parse";
 import { Telegraf, Markup } from "telegraf";
 
 const SUBURBAN_SOURCES = [
@@ -19,6 +20,13 @@ const bot = new Telegraf(BOT_TOKEN);
 
 let db = { sources: {}, updatedAt: "", modes: { weekdays: { stops: {} }, weekend: { stops: {} }, all: { stops: {} } }, stops: {} };
 const modeByChat = new Map();
+const liveCache = {
+  suburban: { ts: 0, text: "" },
+  diesel: { ts: 0, text: "" },
+  long: { ts: 0, text: "" },
+  trains: { ts: 0, text: "" },
+};
+const CACHE_TTL_MS = 10 * 60 * 1000;
 
 function getMode(chatId) {
   return modeByChat.get(chatId) || "weekdays";
@@ -108,19 +116,39 @@ async function replyChunked(ctx, text, max = 3800) {
   }
 }
 
+function htmlToText(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function parsePoezdatoRows(text) {
+  const re = /(\d{3,4}[A-ЯA-Z\/]*?)\s+([A-ЯЁа-яё(). -]{2,40}?)\s*→\s*([A-ЯЁа-яё(). -]{2,40}?)\s+(\d{2}\.\d{2})(?:\s+\d+\s*мин)?\s+(\d{2}\.\d{2})/g;
+  const rows = [];
+  for (const m of text.matchAll(re)) {
+    const num = m[1].trim();
+    const from = m[2].trim();
+    const to = m[3].trim();
+    const depart = m[5].replace('.', ':');
+    rows.push({ num, from, to, depart });
+    if (rows.length > 300) break;
+  }
+  return rows;
+}
+
 async function fetchTrainPreview() {
   try {
+    if (Date.now() - liveCache.trains.ts < CACHE_TTL_MS && liveCache.trains.text) return liveCache.trains.text;
+
     const res = await fetch(TRAINS_URL, { headers: { "User-Agent": "Mozilla/5.0" } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
 
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/\s{2,}/g, " ");
-
+    const text = htmlToText(html);
     const re = /(\d{2}:\d{2})\s+Осиповичи-1\s+[—-]\s+([^\d]{3,40}?)\s+(\d{4})/g;
     const rows = [];
     for (const m of text.matchAll(re)) {
@@ -128,10 +156,69 @@ async function fetchTrainPreview() {
       if (rows.length >= 8) break;
     }
 
-    if (!rows.length) return "Не удалось распарсить ближайшие электрички. Открой источник ниже.";
-    return rows.join("\n");
+    const out = rows.length ? rows.join("\n") : "Не удалось распарсить ближайшие электрички. Открой источник ниже.";
+    liveCache.trains = { ts: Date.now(), text: out };
+    return out;
   } catch {
     return "Не удалось получить онлайн-данные по электричкам прямо сейчас.";
+  }
+}
+
+async function fetchSuburbanBusPreview() {
+  try {
+    if (Date.now() - liveCache.suburban.ts < CACHE_TTL_MS && liveCache.suburban.text) return liveCache.suburban.text;
+
+    const res = await fetch(SUBURBAN_SOURCES[2], { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const pdf = await pdfParse(buf);
+    const text = String(pdf.text || "").replace(/\s{2,}/g, " ");
+
+    const re = /(\d{2,3}(?:-[A-ЯA-Z])?)\s+([A-ЯЁа-яё(). -]{3,60}?-[A-ЯЁа-яё(). -]{2,60}?)\s+((?:\d{1,2}[\-:]\d{2}(?:,\s*)?){1,8})/g;
+    const rows = [];
+    for (const m of text.matchAll(re)) {
+      const route = m[1].trim();
+      const dir = m[2].replace(/\s{2,}/g, ' ').trim();
+      const times = m[3].replace(/-/g, ':').replace(/\s+/g, ' ').trim();
+      rows.push(`• ${route} ${dir} — ${times}`);
+      if (rows.length >= 12) break;
+    }
+
+    const out = rows.length
+      ? rows.join("\n")
+      : "Не удалось уверенно распарсить пригород из PDF. Используй кнопки источников ниже.";
+    liveCache.suburban = { ts: Date.now(), text: out };
+    return out;
+  } catch {
+    return "Не удалось получить/распарсить пригородные автобусы онлайн.";
+  }
+}
+
+async function fetchRailByType(type) {
+  try {
+    const key = type === 'long' ? 'long' : 'diesel';
+    if (Date.now() - liveCache[key].ts < CACHE_TTL_MS && liveCache[key].text) return liveCache[key].text;
+
+    const res = await fetch(DIESEL_URL, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const text = htmlToText(html);
+    const all = parsePoezdatoRows(text);
+
+    const filtered = all.filter((r) => {
+      const n = r.num;
+      const isSuburban = /^\d{4}$/.test(n);
+      const isLong = !isSuburban;
+      if (type === 'diesel') return isSuburban;
+      return isLong;
+    });
+
+    const rows = filtered.slice(0, 12).map((r) => `• ${r.depart} ${r.from} → ${r.to} (#${r.num})`);
+    const out = rows.length ? rows.join('\n') : 'Не удалось получить данные по выбранной категории.';
+    liveCache[key] = { ts: Date.now(), text: out };
+    return out;
+  } catch {
+    return 'Не удалось получить данные по железной дороге прямо сейчас.';
   }
 }
 
@@ -192,12 +279,13 @@ bot.command("find", async (ctx) => {
 });
 
 bot.command("suburban", async (ctx) => {
+  const preview = await fetchSuburbanBusPreview();
   await ctx.reply(
     [
-      "🚌 Пригородные автобусы",
-      "Выбери источник (самые стабильные сверху).",
+      "🚌 Пригородные автобусы (превью):",
+      preview,
       "",
-      "Если хочешь, следующим шагом добавлю парсер направлений: Осиповичи → Ясень/Свислочь и т.д.",
+      "Если нет нужного направления — открой источники кнопками ниже.",
     ].join("\n"),
     suburbanLinksKeyboard()
   );
@@ -209,17 +297,13 @@ bot.command("trains", async (ctx) => {
 });
 
 bot.command("diesel", async (ctx) => {
-  await ctx.reply(
-    "🚉 Дизеля/пригородные поезда\nОткрой источник ниже. Могу добавить авто-парсинг по направлениям в следующем шаге.",
-    railLinksKeyboard()
-  );
+  const preview = await fetchRailByType("diesel");
+  await ctx.reply(`🚉 Дизеля/пригородные поезда (превью):\n${preview}`, railLinksKeyboard());
 });
 
 bot.command("long", async (ctx) => {
-  await ctx.reply(
-    "🚄 Поезда дальнего следования\nОткрой источник ниже. Позже добавим фильтрацию по направлениям и времени.",
-    railLinksKeyboard()
-  );
+  const preview = await fetchRailByType("long");
+  await ctx.reply(`🚄 Поезда дальнего следования (превью):\n${preview}`, railLinksKeyboard());
 });
 
 bot.hears("🏙 Город", async (ctx) => {
@@ -228,12 +312,13 @@ bot.hears("🏙 Город", async (ctx) => {
 });
 
 bot.hears("🚌 Пригород", async (ctx) => {
+  const preview = await fetchSuburbanBusPreview();
   await ctx.reply(
     [
-      "🚌 Пригородные автобусы",
-      "Выбери источник ниже.",
+      "🚌 Пригородные автобусы (превью):",
+      preview,
       "",
-      "Следующий шаг — авто-парсинг направлений в удобный вид для телефона.",
+      "Источники ниже 👇",
     ].join("\n"),
     suburbanLinksKeyboard()
   );
@@ -245,11 +330,13 @@ bot.hears("🚆 Электрички", async (ctx) => {
 });
 
 bot.hears("🚉 Дизеля", async (ctx) => {
-  await ctx.reply("🚉 Дизеля/пригородные поезда. Источники ниже 👇", railLinksKeyboard());
+  const preview = await fetchRailByType("diesel");
+  await ctx.reply(`🚉 Дизеля/пригородные поезда (превью):\n${preview}`, railLinksKeyboard());
 });
 
 bot.hears("🚄 Дальние", async (ctx) => {
-  await ctx.reply("🚄 Поезда дальнего следования. Источники ниже 👇", railLinksKeyboard());
+  const preview = await fetchRailByType("long");
+  await ctx.reply(`🚄 Поезда дальнего следования (превью):\n${preview}`, railLinksKeyboard());
 });
 
 bot.hears("📅 Будни", async (ctx) => {
