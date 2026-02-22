@@ -39,11 +39,24 @@ function expandRouteLine(line) {
     .trim();
 
   const parts = fixed
-    .split(/(?=\s\d{1,2}[А-ЯA-Z]?\s*[—-])/g)
-    .map((s) => s.trim())
+    .split(/(?=(?:^|[.;])\s*\d{1,2}[А-ЯA-Z]?\s*[—-]\s*[А-ЯA-Zа-я])/g)
+    .map((s) => s.replace(/^[.;\s]+/, "").trim())
     .filter(Boolean);
 
   return parts.length ? parts : [fixed];
+}
+
+function prettifyLine(s) {
+  return String(s || "")
+    .replace(/\b(\d)\s+(\d)\s*([—-])/g, "$1$2 $3")
+    .replace(/:0\s+/g, ":0")
+    .replace(/;\s*0\s+/g, "; 0")
+    .replace(/\b0\s+(\d:[0-5]\d)\b/g, "0$1")
+    .replace(/(\d)\s*:\s*(\d)\s+(\d)/g, "$1:$2$3")
+    .replace(/(^|\D)(\d)\s+(\d:\d{2})/g, "$10$2$3")
+    .replace(/(^|\D)(\d{1,2}:\d)\s+(\d)(\D|$)/g, "$1$2$3$4")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function formatStop(name, mode = "weekdays") {
@@ -60,7 +73,7 @@ function formatStop(name, mode = "weekdays") {
     return `Нет данных по остановке: ${name}`;
   }
 
-  const expanded = lines.flatMap(expandRouteLine).filter((s) => s.length > 8);
+  const expanded = lines.flatMap(expandRouteLine).map(prettifyLine).filter((s) => s.length > 8);
   const pretty = expanded.map((l) => `• ${l}`);
 
   return [

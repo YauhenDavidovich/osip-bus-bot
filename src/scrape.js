@@ -33,6 +33,15 @@ function normalizeStopName(raw) {
 
 function normalizeChunk(s) {
   return String(s || "")
+    // stop/footer garbage from source site
+    .replace(/На этой странице[\s\S]*$/i, "")
+    .replace(/©\s*20\d{2}[\s\S]*$/i, "")
+    // normalize spaced times like "14:0 0" -> "14:00", "0 7:52" -> "07:52"
+    .replace(/:\s*0\s+(\d:[0-5]\d)/g, ":0$1")
+    .replace(/;\s*0\s+(\d:[0-5]\d)/g, "; 0$1")
+    .replace(/(\d)\s*[:]\s*(\d)\s+(\d)/g, "$1:$2$3")
+    .replace(/(^|\D)(\d)\s+(\d:\d{2})/g, "$10$2$3")
+    .replace(/(^|\D)(\d{1,2}:\d)\s+(\d)(\D|$)/g, "$1$2$3$4")
     .replace(/\s*[:]\s*/g, ":")
     .replace(/\s*[;]\s*/g, "; ")
     .replace(/\s*[.]\s*/g, ". ")
@@ -51,7 +60,12 @@ function parseStops(text) {
     const stopName = normalizeStopName(lines[0]);
     if (!stopName) continue;
 
-    const body = lines.slice(1).join(" ");
+    let body = lines.slice(1).join(" ");
+    body = body
+      // fix spaced route numbers like "1 2 —" -> "12 —"
+      .replace(/\b(\d)\s+(\d)\s*([—-])/g, "$1$2 $3")
+      // fix split leading zero times like "0 7:52" -> "07:52"
+      .replace(/\b0\D+(\d:[0-5]\d)\b/g, "0$1");
 
     // split at probable route starts after sentence boundaries; avoids splitting on times like 10:55
     let chunks = body
@@ -63,7 +77,12 @@ function parseStops(text) {
     if (!chunks.length && body) chunks = [normalizeChunk(body)];
 
     // drop obvious garbage fragments
-    chunks = chunks.filter((s) => s.length > 12 && /\d{1,2}[А-ЯA-Z]?\s*[—-]/.test(s));
+    chunks = chunks.filter(
+      (s) =>
+        s.length > 12 &&
+        /\d{1,2}[А-ЯA-Z]?\s*[—-]/.test(s) &&
+        !/Google\s+Sites|Cookie\s+Policy|Report\s+abuse|новостные материалы|быстрые ссылки/i.test(s)
+    );
 
     if (!stops[stopName]) stops[stopName] = [];
     for (const ch of chunks) {
