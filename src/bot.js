@@ -2,6 +2,14 @@ import "dotenv/config";
 import fs from "fs/promises";
 import { Telegraf, Markup } from "telegraf";
 
+const SUBURBAN_SOURCES = [
+  "https://osipovichi.com/auto_pr.html",
+  "https://osipinfo.by/prigorodnye-avtobusy.html",
+  "https://www.osipovichi.gov.by/uploads/files/Raspisanie-prigorod.pdf",
+];
+
+const TRAINS_URL = "https://rasp.yandex.by/station/9614258/suburban/";
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN missing");
 
@@ -26,6 +34,7 @@ async function loadDb() {
 function stopKeyboard(mode = "weekdays") {
   const names = Object.keys(getStopsForMode(mode)).sort();
   const rows = [];
+  rows.push(["🏙 Город", "🚌 Пригород", "🚆 Электрички"]);
   for (let i = 0; i < names.length; i += 2) rows.push(names.slice(i, i + 2));
   rows.push(["📅 Будни", "📅 Выходные"]);
   rows.push(["🔄 Обновить данные", "ℹ️ Источник"]);
@@ -96,6 +105,33 @@ async function replyChunked(ctx, text, max = 3800) {
   }
 }
 
+async function fetchTrainPreview() {
+  try {
+    const res = await fetch(TRAINS_URL, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ")
+      .replace(/\s{2,}/g, " ");
+
+    const re = /(\d{2}:\d{2})\s+Осиповичи-1\s+[—-]\s+([^\d]{3,40}?)\s+(\d{4})/g;
+    const rows = [];
+    for (const m of text.matchAll(re)) {
+      rows.push(`• ${m[1]} → ${m[2].trim()} (#${m[3]})`);
+      if (rows.length >= 8) break;
+    }
+
+    if (!rows.length) return "Не удалось распарсить ближайшие электрички. Открой источник ниже.";
+    return rows.join("\n");
+  } catch {
+    return "Не удалось получить онлайн-данные по электричкам прямо сейчас.";
+  }
+}
+
 bot.start(async (ctx) => {
   const chatId = ctx.chat?.id;
   if (chatId) modeByChat.set(chatId, "weekdays");
@@ -134,6 +170,43 @@ bot.command("find", async (ctx) => {
   }
 
   await ctx.reply("Найдено:\n" + matched.map((s) => `• ${s}`).join("\n"));
+});
+
+bot.command("suburban", async (ctx) => {
+  await ctx.reply(
+    [
+      "🚌 Пригородные автобусы (источники):",
+      ...SUBURBAN_SOURCES.map((u) => `• ${u}`),
+      "",
+      "Если нужно, могу добавить поиск по конкретному направлению (например Осиповичи → Ясень).",
+    ].join("\n")
+  );
+});
+
+bot.command("trains", async (ctx) => {
+  const preview = await fetchTrainPreview();
+  await ctx.reply(`🚆 Ближайшие электрички со станции Осиповичи-1:\n${preview}\n\nИсточник: ${TRAINS_URL}`);
+});
+
+bot.hears("🏙 Город", async (ctx) => {
+  const mode = getMode(ctx.chat?.id);
+  await ctx.reply(`Режим города: ${mode === "weekend" ? "выходные" : "будни"}. Выбирай остановку 👇`, stopKeyboard(mode));
+});
+
+bot.hears("🚌 Пригород", async (ctx) => {
+  await ctx.reply(
+    [
+      "🚌 Пригородные автобусы (источники):",
+      ...SUBURBAN_SOURCES.map((u) => `• ${u}`),
+      "",
+      "Могу сделать отдельный парсер пригорода, если дадим стабильный источник.",
+    ].join("\n")
+  );
+});
+
+bot.hears("🚆 Электрички", async (ctx) => {
+  const preview = await fetchTrainPreview();
+  await ctx.reply(`🚆 Ближайшие электрички со станции Осиповичи-1:\n${preview}\n\nИсточник: ${TRAINS_URL}`);
 });
 
 bot.hears("📅 Будни", async (ctx) => {
@@ -183,7 +256,9 @@ await loadDb();
 await bot.telegram.setMyCommands([
   { command: "start", description: "Старт и меню" },
   { command: "stops", description: "Показать остановки" },
-  { command: "find", description: "Поиск остановки" }
+  { command: "find", description: "Поиск остановки" },
+  { command: "suburban", description: "Пригородные автобусы" },
+  { command: "trains", description: "Электрички" }
 ]);
 
 bot.launch();
