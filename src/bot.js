@@ -9,6 +9,8 @@ const SUBURBAN_SOURCES = [
 ];
 
 const TRAINS_URL = "https://rasp.yandex.by/station/9614258/suburban/";
+const DIESEL_URL = "https://poezdato.net/raspisanie-po-stancyi/osipovichi/";
+const LONG_TRAINS_URL = "https://poezdato.net/raspisanie-po-stancyi/osipovichi/";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN missing");
@@ -34,7 +36,8 @@ async function loadDb() {
 function stopKeyboard(mode = "weekdays") {
   const names = Object.keys(getStopsForMode(mode)).sort();
   const rows = [];
-  rows.push(["🏙 Город", "🚌 Пригород", "🚆 Электрички"]);
+  rows.push(["🏙 Город", "🚌 Пригород"]);
+  rows.push(["🚆 Электрички", "🚉 Дизеля", "🚄 Дальние"]);
   for (let i = 0; i < names.length; i += 2) rows.push(names.slice(i, i + 2));
   rows.push(["📅 Будни", "📅 Выходные"]);
   rows.push(["🔄 Обновить данные", "ℹ️ Источник"]);
@@ -132,6 +135,22 @@ async function fetchTrainPreview() {
   }
 }
 
+function suburbanLinksKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.url("osipinfo (пригород)", SUBURBAN_SOURCES[1])],
+    [Markup.button.url("osipovichi.com (пригород)", SUBURBAN_SOURCES[0])],
+    [Markup.button.url("Осиповичский райисполком PDF", SUBURBAN_SOURCES[2])],
+  ]);
+}
+
+function railLinksKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.url("Электрички (Яндекс)", TRAINS_URL)],
+    [Markup.button.url("Дизеля/пригородные поезда", DIESEL_URL)],
+    [Markup.button.url("Поезда дальнего следования", LONG_TRAINS_URL)],
+  ]);
+}
+
 bot.start(async (ctx) => {
   const chatId = ctx.chat?.id;
   if (chatId) modeByChat.set(chatId, "weekdays");
@@ -175,17 +194,32 @@ bot.command("find", async (ctx) => {
 bot.command("suburban", async (ctx) => {
   await ctx.reply(
     [
-      "🚌 Пригородные автобусы (источники):",
-      ...SUBURBAN_SOURCES.map((u) => `• ${u}`),
+      "🚌 Пригородные автобусы",
+      "Выбери источник (самые стабильные сверху).",
       "",
-      "Если нужно, могу добавить поиск по конкретному направлению (например Осиповичи → Ясень).",
-    ].join("\n")
+      "Если хочешь, следующим шагом добавлю парсер направлений: Осиповичи → Ясень/Свислочь и т.д.",
+    ].join("\n"),
+    suburbanLinksKeyboard()
   );
 });
 
 bot.command("trains", async (ctx) => {
   const preview = await fetchTrainPreview();
-  await ctx.reply(`🚆 Ближайшие электрички со станции Осиповичи-1:\n${preview}\n\nИсточник: ${TRAINS_URL}`);
+  await ctx.reply(`🚆 Ближайшие электрички со станции Осиповичи-1:\n${preview}`, railLinksKeyboard());
+});
+
+bot.command("diesel", async (ctx) => {
+  await ctx.reply(
+    "🚉 Дизеля/пригородные поезда\nОткрой источник ниже. Могу добавить авто-парсинг по направлениям в следующем шаге.",
+    railLinksKeyboard()
+  );
+});
+
+bot.command("long", async (ctx) => {
+  await ctx.reply(
+    "🚄 Поезда дальнего следования\nОткрой источник ниже. Позже добавим фильтрацию по направлениям и времени.",
+    railLinksKeyboard()
+  );
 });
 
 bot.hears("🏙 Город", async (ctx) => {
@@ -196,17 +230,26 @@ bot.hears("🏙 Город", async (ctx) => {
 bot.hears("🚌 Пригород", async (ctx) => {
   await ctx.reply(
     [
-      "🚌 Пригородные автобусы (источники):",
-      ...SUBURBAN_SOURCES.map((u) => `• ${u}`),
+      "🚌 Пригородные автобусы",
+      "Выбери источник ниже.",
       "",
-      "Могу сделать отдельный парсер пригорода, если дадим стабильный источник.",
-    ].join("\n")
+      "Следующий шаг — авто-парсинг направлений в удобный вид для телефона.",
+    ].join("\n"),
+    suburbanLinksKeyboard()
   );
 });
 
 bot.hears("🚆 Электрички", async (ctx) => {
   const preview = await fetchTrainPreview();
-  await ctx.reply(`🚆 Ближайшие электрички со станции Осиповичи-1:\n${preview}\n\nИсточник: ${TRAINS_URL}`);
+  await ctx.reply(`🚆 Ближайшие электрички со станции Осиповичи-1:\n${preview}`, railLinksKeyboard());
+});
+
+bot.hears("🚉 Дизеля", async (ctx) => {
+  await ctx.reply("🚉 Дизеля/пригородные поезда. Источники ниже 👇", railLinksKeyboard());
+});
+
+bot.hears("🚄 Дальние", async (ctx) => {
+  await ctx.reply("🚄 Поезда дальнего следования. Источники ниже 👇", railLinksKeyboard());
 });
 
 bot.hears("📅 Будни", async (ctx) => {
@@ -258,7 +301,9 @@ await bot.telegram.setMyCommands([
   { command: "stops", description: "Показать остановки" },
   { command: "find", description: "Поиск остановки" },
   { command: "suburban", description: "Пригородные автобусы" },
-  { command: "trains", description: "Электрички" }
+  { command: "trains", description: "Электрички" },
+  { command: "diesel", description: "Дизеля" },
+  { command: "long", description: "Дальние поезда" }
 ]);
 
 bot.launch();
